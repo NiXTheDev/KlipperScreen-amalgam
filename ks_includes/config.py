@@ -74,6 +74,24 @@ class KlipperScreenConfig:
                     if self.validate_config(auto_gen, string=saved_def, remove=True):
                         self.config.read_string(saved_def)
                         logging.info(f"====== Saved Def ======\n{saved_def}\n=======================")
+
+            # Happy Hare: Allow for menus to be dual rooted without duplicating config
+            for i in self.config.sections():
+                if i.startswith("menu __"):
+                    menu_hierachy = i.split()
+                    if len(menu_hierachy) > 2:
+                        roots = menu_hierachy[1].split(",")
+                        if len(roots) > 1:
+                            for j in roots:
+                                if j.startswith("__"):
+                                    duplicated_menu = " ".join([str(item) for item in menu_hierachy[2:]])
+                                    new_section = (f"menu {j} {duplicated_menu}")
+                                    logging.debug(f"Spliting {i}")
+                                    self.config.add_section(new_section)
+                                    for key in self.config.options(i):
+                                        self.config.set(new_section, key, self.config.get(i, key))
+                            self.config.remove_section(i)
+
             # This is the final config
             # self.log_config(self.config)
         except KeyError as Kerror:
@@ -146,13 +164,14 @@ class KlipperScreenConfig:
 
     def validate_config(self, config, string="", remove=False):
         valid = True
-        if string:
-            msg = "Section headers have extra information after brackets possible newline issue:"
-            for line in string.split('\n'):
-                if re.match(r".+\].", line):
-                    logging.error(line)
-                    self.errors.append(f'{msg}\n\n{line}')
-                    return False
+# Happy Hare: not a valid check, attributes can be referenced with index, e.g. printer.mmu.gate_status[4]
+#        if string:
+#            msg = "Section headers have extra information after brackets possible newline issue:"
+#            for line in string.split('\n'):
+#                if re.match(r".+\].", line):
+#                    logging.error(line)
+#                    self.errors.append(f'{msg}\n\n{line}')
+#                    return False
         for section in config:
             if section == 'DEFAULT' or section.startswith('include '):
                 # Do not validate 'DEFAULT' or 'include*' sections
@@ -163,10 +182,12 @@ class KlipperScreenConfig:
                     'invert_x', 'invert_y', 'invert_z', '24htime', 'only_heaters', 'show_cursor', 'confirm_estop',
                     'autoclose_popups', 'use_dpms', 'use_default_menu', 'side_macro_shortcut', 'use-matchbox-keyboard',
                     'show_heater_power', "show_scroll_steppers", "auto_open_extrude"
+                    'side_mmu_shortcut', 'mmu_color_gates', 'mmu_color_filament', 'mmu_bold_filament', "mmu_use_spoolman", # Happy Hare
                 )
                 strs = (
                     'default_printer', 'language', 'print_sort_dir', 'theme', 'screen_blanking_printing', 'font_size',
                     'print_estimate_method', 'screen_blanking', "screen_on_devices", "screen_off_devices", 'print_view',
+                    'sticky_panel', # Happy Hare
                     "lock_password"
                 )
                 numbers = (
@@ -190,7 +211,7 @@ class KlipperScreenConfig:
                 strs = ('gcode', '')
                 numbers = [f'{option}' for option in config[section] if option != 'gcode']
             elif section.startswith('menu '):
-                strs = ('name', 'icon', 'panel', 'method', 'params', 'enable', 'confirm', 'style')
+                strs = ('name', 'icon', 'panel', 'method', 'params', 'enable', 'confirm', 'style', 'show_disabled', 'refresh_on') # Happy Hare: Added show_disabled, refresh_on
             elif section.startswith('graph')\
                     or section.startswith('displayed_macros')\
                     or section.startswith('spoolman'):
@@ -222,6 +243,10 @@ class KlipperScreenConfig:
                         self.errors.append(msg)
                 elif key in numbers and not self.is_float(config[section][key]) \
                         or key in bools and not self.is_bool(config[section][key]):
+                    if key == "mmu_use_spoolman": # Happy Hare added temporary upgrade hack
+                        self.config.remove_option(section, key)
+                        self.config.set(section, key, "True")
+                        continue
                     msg = (
                         f'Unable to parse "{key}" from [{section}]\n'
                         f'Expected a {"number" if key in numbers else "boolean"} but got: {config[section][key]}'
@@ -281,6 +306,21 @@ class KlipperScreenConfig:
             {"side_macro_shortcut": {
                 "section": "main", "name": _("Macro shortcut on sidebar"), "type": "binary",
                 "value": "True", "callback": screen.toggle_shortcut}},
+            {"side_mmu_shortcut": { # Happy Hare vvv
+                "section": "main", "name": _("MMU shortcut on sidebar"), "type": "binary",
+                "value": "True", "callback": screen.toggle_mmu_shortcut}},
+            {"mmu_color_gates": {
+                "section": "main", "name": _("MMU show color in gates"), "type": "binary",
+                "value": "True"}},
+            {"mmu_color_filament": {
+                "section": "main", "name": _("MMU show colored filament"), "type": "binary",
+                "value": "True"}},
+            {"mmu_bold_filament": {
+                "section": "main", "name": _("MMU show bold filament"), "type": "binary",
+                "value": "True"}},
+            {"mmu_use_spoolman": {
+                "section": "main", "name": _("MMU use SpoolMan for filaments"), "type": "binary",
+                "value": "False"}}, # Happy Hare ^^^
             {"font_size": {
                 "section": "main", "name": _("Font Size"), "type": "dropdown",
                 "tooltip": _("Inversely affects the icon size"),
@@ -617,7 +657,9 @@ class KlipperScreenConfig:
             "confirm": cfg.get("confirm", None),
             "enable": cfg.get("enable", "True"),
             "params": cfg.get("params", "{}"),
-            "style": cfg.get("style", None)
+            "style": cfg.get("style", None),
+            "show_disabled": cfg.get("show_disabled", "False"), # Happy Hare
+            "refresh_on": cfg.get("refresh_on", None) # Happy Hare
         }
 
         return {name[(len(menu) + 6):]: item}

@@ -70,6 +70,7 @@ class KlipperScreen(Gtk.Window):
     _ws = None
     reinit_count = 0
     max_retries = 4
+    last_popup_msg = None # Happy Hare
     initialized = False
     initializing = False
     popup_timeout = None
@@ -205,6 +206,23 @@ class KlipperScreen(Gtk.Window):
             "startup": self.state_startup,
             "shutdown": self.state_shutdown
         }
+
+        # Happy Hare vvv
+        sticky_panel=self._config.get_main_config().get("sticky_panel", None)  
+        if not sticky_panel is None:
+            self.base_panel.action_bar.set_visible(False)
+            self.base_panel.action_bar.set_no_show_all(True)
+            self.base_panel.titlebar.set_visible(False)
+            self.base_panel.titlebar.set_no_show_all(True)
+            for x in ["printing", "ready"]:
+                state_callbacks[x]=self.state_sticky_panel 
+        else:
+            self.base_panel.action_bar.set_visible(True)
+            self.base_panel.action_bar.set_no_show_all(False)
+            self.base_panel.titlebar.set_visible(True)
+            self.base_panel.titlebar.set_no_show_all(False)
+        # Happy Hare ^^^
+
         for printer in self.printers:
             printer["data"] = Printer(self.state_execute, state_callbacks)
         default_printer = self._config.get_main_config().get('default_printer')
@@ -293,6 +311,10 @@ class KlipperScreen(Gtk.Window):
                 "exclude_object": ["current_object", "objects", "excluded_objects"],
                 "manual_probe": ['is_active'],
                 "screws_tilt_adjust": ['results', 'error'],
+                "mmu": ["enabled", "is_locked", "is_homed", "tool", "next_tool", "last_tool", "last_toolchange", "gate",
+                    "clog_detection", "endless_spool", "filament", "servo", "gate_status", "gate_material", "gate_color",
+                    "gate_spool_id", "endless_spool_groups", "ttg_map", "filament_pos", "filament_direction", "action",
+                    "has_bypass", "sync_drive", "tool_extrusion_multipliers", "tool_speed_multipliers", "print_state"],
             }
         }
         for extruder in self.printer.get_tools():
@@ -312,8 +334,11 @@ class KlipperScreen(Gtk.Window):
             requested_updates['objects'][p] = ["value"]
         for led in self.printer.get_leds():
             requested_updates['objects'][led] = ["color_data"]
+        for e in self.printer.get_mmu_encoders(): # Happy Hare
+            requested_updates['objects'][e] = ["encoder_pos", "detection_length", "min_headroom", "headroom", "desired_headroom", "detection_mode", "enabled", "flow_rate"]
 
         self._ws.klippy.object_subscription(requested_updates)
+        # Happy Hare TODO make this extensible with variables references in custom Menus..? Can you call object_subscription more than once?
 
     @staticmethod
     def _load_panel(panel):
@@ -375,6 +400,8 @@ class KlipperScreen(Gtk.Window):
         if hasattr(self.panels[panel], "activate"):
             self.panels[panel].activate()
         self.show_all()
+        if hasattr(self.panels[panel], "post_attach"): # Happy Hare - Gtk.Notebook must be rendered before layer selected
+            self.panels[panel].post_attach()
 
     def log_notification(self, message, level=0):
         time = datetime.now().strftime("%H:%M:%S")
@@ -387,7 +414,9 @@ class KlipperScreen(Gtk.Window):
     def notification_log_clear(self):
         self.notification_log.clear()
 
-    def show_popup_message(self, message, level=3, from_ws=False):
+    def show_popup_message(self, message, level=3, from_ws=False, save=False, monospace=False): # Happy Hare: added `save=, monospace=` functionality
+        message = message.replace("// ", "") # Happy Hare added to clean up multi-line messages
+
         if from_ws:
             if (datetime.now() - self.last_popup_time).seconds < 1:
                 return
@@ -420,11 +449,16 @@ class KlipperScreen(Gtk.Window):
         popup = Gtk.Popover(relative_to=self.base_panel.titlebar,
                             halign=Gtk.Align.CENTER, width_request=int(self.width * .9))
         popup.get_style_context().add_class("message_popup_popover")
+        if monospace: # Happy Hare added
+            popup.get_style_context().add_class("mmu_monospace_popup")
         popup.add(msg)
         popup.popup()
 
         self.popup_message = popup
         self.popup_message.show_all()
+
+        if save: # Happy Hare added
+            self.last_popup_msg = message
 
         if self._config.get_main_config().getboolean('autoclose_popups', True):
             if self.popup_timeout is not None:
@@ -444,6 +478,19 @@ class KlipperScreen(Gtk.Window):
             self.popup_timeout = None
         self.popup_message = None
         return False
+
+    def show_last_popup_message(self, extra_msg=None): # Happy Hare
+        msg = self.last_popup_msg if self.last_popup_msg != None else ""
+        if extra_msg != None:
+            msg += (f"\n\n{extra_msg}")
+        if len(msg) > 0:
+            self.show_popup_message(msg, level=3, save=False)
+
+    def clear_last_popup_message(self): # Happy Hare
+        self.last_popup_msg = None
+
+    def have_last_popup_message(self): # Happy Hare
+        return (self.last_popup_msg != None)
 
     def show_error_modal(self, title_msg, description="", help_msg=None):
         logging.error(f"Showing error modal: {title_msg} {description}")
@@ -611,6 +658,11 @@ class KlipperScreen(Gtk.Window):
                 break
         self.attach_panel(self._cur_panels[-1])
 
+    def _menu_go_to(self, widget, panel_name, title): # Happy Hare added
+        logging.info(f"#### Menu go_to {panel_name}")
+        self._menu_go_back(widget, home=True)
+        self.show_panel(panel_name, title, remove_all=False)
+
     def check_dpms_state(self):
         if not self.use_dpms:
             return False
@@ -714,6 +766,16 @@ class KlipperScreen(Gtk.Window):
         else:
             self.panels['printer_select'].disconnected_callback()
 
+    def state_sticky_panel(self): # Happy Hare
+        if "job_status" in self._cur_panels and wait:
+            return
+        if not self.initialized:
+            logging.debug("Printer not initialized yet")
+            self.printer.state = "not ready"
+            return        
+        sticky_panel=self._config.get_main_config().get("sticky_panel", None)        
+        self.show_panel(sticky_panel, remove_all=True)
+
     def state_disconnected(self):
         logging.debug("### Going to disconnected")
         self.printer.stop_tempstore_updates()
@@ -732,13 +794,23 @@ class KlipperScreen(Gtk.Window):
 
     def state_paused(self):
         self.state_printing()
-        if self._config.get_main_config().getboolean("auto_open_extrude", fallback=True):
+        if self._config.get_main_config().get("sticky_panel", None): return # Happy Hare
+        if self.prompt is not None: return # Happy Hare
+        mmu_active = True if "mmu_main" in self._cur_panels else False # Happy Hare
+        if self._config.get_main_config().getboolean("auto_open_extrude", fallback=True) and not mmu_active: # Happy hare
             self.show_panel("extrude")
 
     def state_printing(self):
+        #self.screensaver.close() # Happy Hare
+        if self._config.get_main_config().get("sticky_panel", None): return # Happy Hare
+        if self.prompt is not None: return # Happy Hare
+        mmu_active = True if "mmu_main" in self._cur_panels else False # Happy Hare
         self.show_panel("job_status", remove_all=True)
+        if mmu_active: # Happy Hare
+            self.show_panel("mmu_main", 'MMU')
 
     def state_ready(self, wait=True):
+        if self._config.get_main_config().get("sticky_panel", None): return # Happy Hare
         # Do not return to main menu if completing a job, timeouts/user input will return
         if "job_status" in self._cur_panels and wait:
             return
@@ -746,8 +818,12 @@ class KlipperScreen(Gtk.Window):
             logging.debug("Printer not initialized yet")
             self.printer.state = "not ready"
             return
+        if self.prompt is not None: return # Happy Hare
+        mmu_active = True if "mmu_main" in self._cur_panels else False # Happy Hare
         self.files.refresh_files()
         self.show_panel("main_menu", remove_all=True, items=self._config.get_menu_items("__main"))
+        if mmu_active: # Happy Hare
+            self.show_panel("mmu_main", 'MMU')
 
     def state_startup(self):
         self.printer_initializing(_("Klipper is attempting to start"))
@@ -766,6 +842,9 @@ class KlipperScreen(Gtk.Window):
                 + _("LOAD_FILAMENT/UNLOAD_FILAMENT are hidden and should be used from extrude") + "\n"
             )
         self.base_panel.show_shortcut(show)
+
+    def toggle_mmu_shortcut(self, value): # Happy Hare
+        self.base_panel.show_mmu_shortcut(value and self.printer.has_mmu)
 
     def change_language(self, widget, lang):
         self._config.install_language(lang)
@@ -842,14 +921,25 @@ class KlipperScreen(Gtk.Window):
                 self.show_popup_message(_("Temperature too low to extrude"))
                 return
             elif data.startswith("!! "):
-                self.show_popup_message(data[3:], 3, from_ws=True)
+                if data.startswith("!! MMU"): # Happy Hare added condition
+                    self.show_popup_message(data[3:], 3, from_ws=False, save=True)
+                else:
+                    self.show_popup_message(data[3:], 3, from_ws=True)
             elif (
                 "unknown" in data.lower()
                 and "TESTZ" not in data
                 and "MEASURE_AXES_NOISE" not in data
-                and "ACCELEROMETER_QUERY" not in data
-            ):
-                self.show_popup_message(data, from_ws=True)
+                and "ACCELEROMETER_QUERY" in data
+                and "MMU" not in data
+                and "TTG Map" not in data
+                and "Gates / Filaments" not in data
+                and "from Unknown to" not in data
+                and "Tool Unknown" not in data
+            ): # Happy Hare modified
+                if data.startswith("// "): # Happy Hare added
+                    self.show_popup_message(data[3:], from_ws=True)
+                else:
+                    self.show_popup_message(data, from_ws=True)
             elif "SAVE_CONFIG" in data and self.printer.state == "ready":
                 script = {"script": "SAVE_CONFIG"}
                 self._confirm_send_action(
@@ -858,6 +948,10 @@ class KlipperScreen(Gtk.Window):
                     "printer.gcode.script",
                     script
                 )
+            elif data.startswith("// MMU"): # Happy Hare
+                if not data.startswith("// MMU [") and not data.startswith("// MMU BYPASS"):
+                    self.show_popup_message(data[3:], level=1, monospace=data.startswith("// MMU Statistics:"))
+
         self.process_update(action, data)
 
     def process_action(self, action):
@@ -919,15 +1013,21 @@ class KlipperScreen(Gtk.Window):
     def _send_action(self, widget, method, params):
         logging.info(f"{method}: {params}")
         if isinstance(widget, Gtk.Button):
-            self.gtk.Button_busy(widget, True)
-            self._ws.send_method(method, params, self.enable_widget, widget)
+            change_sensitive = not params.get('show_disabled', False) # Happy Hare: Hack to avoid conflict of busy spinner and dynamic sensitivity
+            self.gtk.Button_busy(widget, True, change_sensitive)
+            self._ws.send_method(method, params, self.enable_widget, widget, change_sensitive)
         else:
             self._ws.send_method(method, params)
 
-    def enable_widget(self, *args):
+    def enable_widget(self, *args): # Happy Hare: Added change_sensitive hack
+        change_sensitive = True
+        for x in args:
+            if isinstance(x, bool):
+                change_sensitive = x
+                break
         for x in args:
             if isinstance(x, Gtk.Button):
-                GLib.timeout_add(150, self.gtk.Button_busy, x, False)
+                GLib.timeout_add(150, self.gtk.Button_busy, x, False, change_sensitive)
 
     def printer_initializing(self, msg, go_to_splash=False):
         if 'splash_screen' not in self.panels or go_to_splash:
@@ -1043,6 +1143,17 @@ class KlipperScreen(Gtk.Window):
         if config is False:
             self._init_printer("Error getting printer configuration")
             return False
+
+        # Happy Hare: Since around klipper v0.12.0-340 the configfile processing was re-written. Dynamic
+        # changes to configfile on startup are no longer in 'config' so we merge the critical dynamically
+        # created filament sensors from 'settings' to mimic prior behavior
+        fs = {
+            key: value
+            for key, value in config['status']['configfile']['settings'].items()
+            if key.startswith("filament_switch_sensor ")
+        }
+        config['status']['configfile']['config'].update(fs)
+
         self.printer.reinit(printer_info, config['status'])
         self.printer.available_commands = self.apiclient.get_gcode_help()
         info = self.apiclient.send_request("machine/system_info")
@@ -1067,6 +1178,7 @@ class KlipperScreen(Gtk.Window):
             'firmware_retraction',
             'exclude_object',
             'manual_probe',
+            'mmu', # Happy Hare
             *self.printer.get_tools(),
             *self.printer.get_heaters(),
             *self.printer.get_temp_sensors(),
@@ -1074,6 +1186,7 @@ class KlipperScreen(Gtk.Window):
             *self.printer.get_temp_fans(),
             *self.printer.get_filament_sensors(),
             *self.printer.get_output_pins(),
+            *self.printer.get_mmu_encoders(), # Happy Hare
             *self.printer.get_leds(),
         )
 
@@ -1091,6 +1204,11 @@ class KlipperScreen(Gtk.Window):
         self.initializing = False
         self.printer.process_update(data['status'])
         self.log_notification("Printer Initialized", 1)
+
+        # Happy Hare: Set sensible default value based on mmu config that we are connected to
+        mmu_default_spoolman = str(bool(self.printer.has_mmu and self.printer.spoolman and self.printer.get_config_section("mmu")["spoolman_support"] != "off"))
+        self._config.set("main", "mmu_use_spoolman", mmu_default_spoolman)
+        # Happy Hare ^^^
         return False
 
     def init_tempstore(self):
