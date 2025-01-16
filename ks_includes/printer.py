@@ -1,6 +1,7 @@
 import logging
 
 import gi
+import re # Happy Hare
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib
@@ -21,6 +22,7 @@ class Printer:
         self.ledcount = 0
         self.pwm_tools_count = 0
         self.output_pin_count = 0
+        self.has_mmu = False # Happy Hare
         self.store_timeout = None
         self.tempstore = {}
         self.tempstore_size = 1200
@@ -46,6 +48,7 @@ class Printer:
         self.available_commands.clear()
         self.temp_devices = self.sensors = None
         self.stop_tempstore_updates()
+        self.has_mmu = False # Happy Hare
         self.system_info.clear()
         self.warnings = []
 
@@ -91,6 +94,9 @@ class Printer:
             ):
                 self.ledcount += 1
 
+            if x == 'mmu': # Happy Hare
+                self.has_mmu = True
+
         self.tools = sorted(self.tools)
         self.log_counts(printer_info)
         self.process_update(data)
@@ -103,6 +109,7 @@ class Printer:
         logging.info(f"# Output pins: {self.output_pin_count}")
         logging.info(f"# PWM tools: {self.pwm_tools_count}")
         logging.info(f"# Leds: {self.ledcount}")
+        logging.info(f"# Has MMU: {self.has_mmu}") # Happy Hare
 
     def stop_tempstore_updates(self):
         if self.store_timeout is not None:
@@ -125,6 +132,12 @@ class Printer:
 
         if "webhooks" in data or "print_stats" in data or "idle_timeout" in data:
             self.process_status_update()
+
+    def register_callback(self, var, method, arg):
+        if var in self.printer_callbacks:
+            self.printer_callbacks[var].append([method, arg])
+        else:
+            self.printer_callbacks[var] = [[method, arg]]
 
     def evaluate_state(self):
         # webhooks states: startup, ready, shutdown, error
@@ -228,10 +241,14 @@ class Printer:
         return self.get_config_section_list("temperature_sensor")
 
     def get_filament_sensors(self):
+        mmu_gate_sensors = r"^filament_switch_sensor mmu_.*_\d+$" # Happy Hare
         if self.sensors is None:
-            self.sensors = list(self.get_config_section_list("filament_switch_sensor "))
+            self.sensors = [x for x in list(self.get_config_section_list("filament_switch_sensor ")) if not re.match(mmu_gate_sensors, x)] # Happy Hare" filter out "gate" sensors -- too many
             self.sensors.extend(iter(self.get_config_section_list("filament_motion_sensor ")))
         return self.sensors
+
+    def get_mmu_encoders(self): # Happy Hare
+        return list(self.get_config_section_list("mmu_encoder"))
 
     def get_probe(self):
         probe_types = ["probe", "bltouch", "smart_effector", "probe_eddy_current"]
@@ -241,6 +258,7 @@ class Printer:
                 return self.get_config_section(probe_type)
         return None
 
+    # Called only from main menu and generic menu panels for variable evaluation
     def get_printer_status_data(self):
         return {
             "moonraker": {
@@ -259,6 +277,8 @@ class Printer:
                 "leds": {"count": self.ledcount},
                 "config_sections": list(self.config.keys()),
                 "available_commands": self.available_commands,
+                "idle_timeout": self.get_stat("idle_timeout").copy(), # Happy Hare: Added back because used in menu sensitivity
+                **({"mmu": self.get_stat("mmu")} if self.has_mmu else {}), # Happy Hare
             }
         }
 

@@ -143,6 +143,9 @@ class Panel(ScreenPanel):
         speedbox.add(speedgrid)
 
         filament_sensors = self._printer.get_filament_sensors()
+        pattern = re.compile(r'filament_switch_sensor (mmu_|unit_).*') # Happy Hare MMU sensors to filter out (too noisy)
+        filament_sensors = [item for item in filament_sensors if not pattern.match(item)] # Happy Hare: Remove MMU sensors
+
         sensors = Gtk.Grid(valign=Gtk.Align.CENTER, row_spacing=5, column_spacing=5)
         with_switches = (
             len(filament_sensors) < 4
@@ -155,7 +158,7 @@ class Panel(ScreenPanel):
             self.labels[x] = {
                 'label': Gtk.Label(
                     label=self.prettify(name), hexpand=True, halign=Gtk.Align.CENTER,
-                    ellipsize=Pango.EllipsizeMode.START),
+                    ellipsize=Pango.EllipsizeMode.END), # Happy Hare: Pango.EllipsizeMode.START --> END
                 'box': Gtk.Box()
             }
             self.labels[x]['box'].pack_start(self.labels[x]['label'], True, True, 10)
@@ -243,13 +246,18 @@ class Panel(ScreenPanel):
             if x in data and x in self.labels:
                 if 'enabled' in data[x] and 'switch' in self.labels[x]:
                     self.labels[x]['switch'].set_active(data[x]['enabled'])
-                if 'filament_detected' in data[x] and self._printer.get_stat(x, "enabled"):
-                    if data[x]['filament_detected']:
-                        self.labels[x]['box'].get_style_context().remove_class("filament_sensor_empty")
-                        self.labels[x]['box'].get_style_context().add_class("filament_sensor_detected")
-                    else:
-                        self.labels[x]['box'].get_style_context().remove_class("filament_sensor_detected")
-                        self.labels[x]['box'].get_style_context().add_class("filament_sensor_empty")
+
+                # Happy Hare modified block to always give feedback on disabled sensor (no highlight class)
+                # but retain status if switch indicator is present. i.e. 3 states if small, 4 if switch
+                if self._printer.get_stat(x, "filament_detected"):
+                    self.labels[x]['box'].get_style_context().remove_class("filament_sensor_empty")
+                    self.labels[x]['box'].get_style_context().add_class("filament_sensor_detected")
+                else:
+                    self.labels[x]['box'].get_style_context().remove_class("filament_sensor_detected")
+                    self.labels[x]['box'].get_style_context().add_class("filament_sensor_empty")
+                if not self._printer.get_stat(x, "enabled") and 'switch' not in self.labels[x]:
+                    self.labels[x]['box'].get_style_context().remove_class("filament_sensor_detected")
+                    self.labels[x]['box'].get_style_context().remove_class("filament_sensor_empty")
 
     def change_distance(self, widget, distance):
         logging.info(f"### Distance {distance}")
@@ -314,8 +322,9 @@ class Panel(ScreenPanel):
                 self.labels[x]['box'].get_style_context().add_class("filament_sensor_empty")
         else:
             self._screen._ws.klippy.gcode_script(f"SET_FILAMENT_SENSOR SENSOR={name} ENABLE=0")
-            self.labels[x]['box'].get_style_context().remove_class("filament_sensor_empty")
-            self.labels[x]['box'].get_style_context().remove_class("filament_sensor_detected")
+# Happy Hare: Believe this is a mistake in upstream
+#            self.labels[x]['box'].get_style_context().remove_class("filament_sensor_empty")
+#            self.labels[x]['box'].get_style_context().remove_class("filament_sensor_detected")
 
     def update_temp(self, extruder, temp, target, power):
         if not temp:

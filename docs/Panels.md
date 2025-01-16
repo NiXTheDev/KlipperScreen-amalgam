@@ -131,3 +131,14 @@ panel: updater
 panel: zcalibrate
 ```
 [![Z Calibrate](img/panels/zcalibrate.png)](Panels/Zcalibrate.md)
+
+### [MMU](MMU.md)
+```py
+panel: mmu
+```
+![MMU Main](img/panels/mmu_main.png)
+
+![MMU Manage](img/panels/mmu_manage.png)
+
+![MMU Recover](img/panels/mmu_recover.png)
+
